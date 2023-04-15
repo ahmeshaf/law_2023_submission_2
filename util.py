@@ -1,4 +1,5 @@
 from spacy.tokens import Doc
+import os
 
 HTML_INPUT = """
     <style>
@@ -244,6 +245,40 @@ DOC_HTML = """
                 </iframe>
                 </di>
                 """
+
+
+def generate_key_file(coref_map_tuples, name, out_dir, out_file_path):
+    """
+
+    Parameters
+    ----------
+    coref_map_tuples: list
+    name: str
+    out_dir: str
+    out_file_path: str
+
+    Returns
+    -------
+    None
+    """
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+
+    clus_to_int = {}
+    clus_number = 0
+    with open(out_file_path, 'w') as of:
+        of.write("#begin document (%s);\n" % name)
+        for i, map_ in enumerate(coref_map_tuples):
+            en_id = map_[0]
+            clus_id = map_[1]
+            if clus_id in clus_to_int:
+                clus_int = clus_to_int[clus_id]
+            else:
+                clus_to_int[clus_id] = clus_number
+                clus_number += 1
+                clus_int = clus_to_int[clus_id]
+            of.write("%s\t0\t%d\t%s\t(%d)\n" % (name, i, en_id, clus_int))
+        of.write("#end document\n")
 
 
 class WhitespaceTokenizer:

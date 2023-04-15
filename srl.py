@@ -292,6 +292,131 @@ def srl_fix(
     }
 
 
+@prodigy.recipe(
+    "srl-review",
+    dataset=("The dataset to use", "positional", None, str),
+    spacy_model=("The base model", "positional", None, str),
+    source=("The source data as a JSON or JSONL file/ raw text or ltf directories", "positional", None, str),
+    port=("Port of the app", "option", 'port', int),
+    ann=("Annotator name", 'option', 'ann', str)
+)
+def srl_review(
+    dataset: str,
+    spacy_model: str,
+    source: str,
+    port: Optional[int] = 8080,
+    ann: Optional[str] = '',
+):
+    """
+    Review the wsd annotations
+    """
+    MY_IP = requests.request('GET', 'https://checkip.amazonaws.com/').text.strip()
+    doc_port = 8700
+    pb_port = 8701
+    nlp = spacy.load(spacy_model)
+    nlp.tokenizer = WhitespaceTokenizer(nlp.vocab)
+
+    labels = ['EVT']
+
+    pb_dict = pickle.load(open('./data/roleset.dict', 'rb'))
+
+    # load the data
+    if source.lower().endswith('jsonl'):
+        stream = JSONL(source)
+    elif source.lower().endswith('json'):
+        stream = JSON(source)
+    else:
+        raise TypeError("Need jsonl file type for source.")
+
+    stream_all = sorted([t for t in stream], key=lambda x: (x['doc_id'], int(x['sentence_id']), int(x['spans'][0]['start'])))
+
+    for task in stream_all:
+        task['doc_host'] = f"http://{MY_IP}:{doc_port}/{task['doc_id']}.txt.html#{task['sentence_id']}"
+        if 'roleset_id' not in task:
+            task['roleset_id'] = ''
+        if task['roleset_id'] in pb_dict:
+            task['prop_holder'] = f"http://{MY_IP}:{pb_port}/{pb_dict[task['roleset_id']]['frame']}.html#{task['roleset_id']}"
+
+        if 'annotator' not in task:
+            task['annotator'] = ''
+        # task['_task_hash'] = hash(task['mention_id'])
+        # task['_input_hash'] = -hash(task['mention_id'])
+
+    stream = [task for task in stream_all if task['annotator'] == ann]
+
+    if not len(stream):
+        stream = stream_all
+    num_total_tasks = len(stream)
+    stream = add_tokens(nlp, stream)
+    print('total tasks:', num_total_tasks)
+    batch_size = 15
+
+    field_suggestions = get_field_suggestions(dataset, pb_dict)
+    fix_suggestions = {}
+
+    def make_srl_fix_tasks(stream_):
+        texts = [(eg_["text"], eg_) for eg_ in stream_]
+
+        for doc, eg_ in nlp.pipe(texts, batch_size=batch_size, as_tuples=True):
+            task_ = copy.deepcopy(eg_)
+            task_['field_suggestions'] = field_suggestions
+            roleset_id = task_['roleset_id']
+            # new_task = set_hashes(task_)
+            # task_['_input_hash'] = hash(task_['mention_id'])
+            # task_['_task_hash'] = -hash(task_['mention_id'])
+            yield task_
+
+    stream = make_srl_fix_tasks(stream)
+
+    def before_db(answers):
+        print('before_db')
+        without_suggestions = []
+        for answer in answers:
+            if 'field_suggestions' in answer:
+                answer.pop('field_suggestions')
+            without_suggestions.append(answer)
+        return without_suggestions
+
+    blocks = [
+        # {"view_id": "html"},
+        {"view_id": "html", "html_template": PB_HTML},
+        {"view_id": "html", "html_template": DOC_HTML},
+        {'view_id': 'ner'},
+        {"view_id": "html", "html_template": HTML_INPUT, 'text': None},
+        {'view_id': 'text_input', "field_rows": 1, "field_autofocus": False,
+         "field_label": "Reason for Flagging"}
+    ]
+
+    config = {
+        "lang": nlp.lang,
+        "labels": labels,  # Selectable label options
+        "span_labels": labels,  # Selectable label options
+
+        "show_stats": True,
+        "host": '0.0.0.0',
+        "port": port,
+        'blocks': blocks,
+        'batch_size': batch_size,
+        'history_length': batch_size,
+        'instant_submit': False,
+        "javascript": JAVASCRIPT_WSD
+    }
+
+    return {
+        "view_id": "blocks",  # Annotation interface to use
+        "dataset": dataset,  # Name of dataset to save annotations
+        "stream": stream,  # Incoming stream of examples
+        "before_db": before_db,
+        "exclude": None,
+        "config": config,
+        # "progress": progress,
+        # "on_exit": on_exit,
+        # "validate_answer": validate_answer,
+        # "before_db": before_db
+    }
+
+
+
 if __name__ == '__main__':
     ds = 'test_ldc'
     sp_mod = 'en_core_web_md'
