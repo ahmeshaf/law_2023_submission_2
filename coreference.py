@@ -1,8 +1,10 @@
 import json
+import pickle
 
 from prodigy.components.loaders import JSONL, JSON
 import re
 from scipy.sparse import lil_matrix
+
 from coval.coval.conll.reader import get_coref_infos
 from coval.coval.eval.evaluator import evaluate_documents as evaluate
 from coval.coval.eval.evaluator import muc, b_cubed, ceafe, lea
@@ -56,15 +58,15 @@ def add_eid(task, syn_map, sent_rs_id2task, human=False):
         # only standard eid
         for arg0 in arg0s:
             if (doc_id, sentence_id, arg0) in sent_rs_id2task:
-                add_eid(sent_rs_id2task[doc_id, sentence_id, arg0][0], syn_map, sent_rs_id2task)
+                add_eid(sent_rs_id2task[doc_id, sentence_id, arg0][0], syn_map, sent_rs_id2task,human)
             for arg1 in arg1s:
                 if (doc_id, sentence_id, arg1) in sent_rs_id2task:
-                    add_eid(sent_rs_id2task[doc_id, sentence_id, arg1][0], syn_map, sent_rs_id2task)
+                    add_eid(sent_rs_id2task[doc_id, sentence_id, arg1][0], syn_map, sent_rs_id2task, human)
                 eid_curr = (arg0, rs_resolved, arg1)
                 if (doc_id, sentence_id, arg1) not in sent_rs_id2task:
                     task['EIDs'].add(eid_curr)
                 else:
-                    hop_eids = sent_rs_id2task[(doc_id, sentence_id, arg1)][0]['EIDs']
+                    hop_eids = set(sent_rs_id2task[(doc_id, sentence_id, arg1)][0]['EIDs'])
                     for eid in hop_eids:
                         for i in range(0, len(eid) - 2, 2):
                             task['EIDs'].add((arg0, rs_resolved) + eid[i:])
@@ -73,14 +75,17 @@ def add_eid(task, syn_map, sent_rs_id2task, human=False):
         task['EIDsLoc'] = set()
         for arg0 in arg0s:
             for argt in argTs:
-                task['EIDsTime'].add((arg0, rs_resolved, argt))
-                if '2023' in argt:
-                    argt = argt.replace('2023', '')
-                years = [argt] + get_year(argt)
-                for y in years:
-                    task['EIDsTime'].add((arg0, rs_resolved, y))
+                if argt:
+                    task['EIDsTime'].add((arg0, rs_resolved, argt))
+                    if '2023' in argt:
+                        argt = argt.replace('2023', '')
+                    years = [argt] + get_year(argt)
+                    for y in years:
+                        if y:
+                            task['EIDsTime'].add((arg0, rs_resolved, y))
             for argl in argLs:
-                task['EIDsLoc'].add((arg0, rs_resolved, argl))
+                if argl:
+                    task['EIDsLoc'].add((arg0, rs_resolved, argl))
 
 
 def event_id_resolve(tasks, add_loc_time):
@@ -151,10 +156,8 @@ def run_coreference_results(gold_clusters, predicted_clusters):
     # print('CEAF', (cr, cp, cf))
     # print('CONLL', (mf+bf+cf)/3)
 
-
-
-    recll = np.round((mr + br + cr)/3, 1)
-    precision = np.round((mp + bp + cp)/3, 1)
+    recll = np.round((mr + br)/2, 1)
+    precision = np.round((mp + bp)/2, 1)
     connl = np.round((mf + bf + cf) / 3, 1)
 
     print(' &&', recll, '&', precision, '&', connl, '&', lf)
@@ -218,6 +221,21 @@ def get_syn_map_hum(tsv_file):
     return syn_hum
 
 
+def get_syn_map_vn():
+    pb_dict = pickle.load(open('./data/roleset.dict', 'rb'))
+    rs2cluster_arr = {}
+    for rs, rs_dict in pb_dict.items():
+        if rs not in rs2cluster_arr:
+            rs2cluster_arr[rs] = []
+            for lexlink in rs_dict['lexlinks']:
+                if lexlink['@resource'] == 'VerbNet':
+                    rs2cluster_arr[rs].append(lexlink['@class'][0].split('.')[0])
+    syn_vn = resolve_dict(rs2cluster_arr)
+    return syn_vn
+
+# get_syn_map_vn()
+
+
 def generate_results(my_tasks, add_loc_time=True, only_eventive=False, only_non_eventive=False):
     if only_eventive:
         curr_tasks = [task for task in my_tasks if has_roleset(task['arg1'])]
@@ -234,9 +252,18 @@ def generate_results(my_tasks, add_loc_time=True, only_eventive=False, only_non_
 
 def generate_results_rs_only(my_tasks, syn_map=None):
     gold_clusters_ = [(t['mention_id'], t['gold_cluster']) for t in my_tasks]
-    predicted_clusters_ = [(t['mention_id'], (t['topic'], t['roleset_id'])) for t in my_tasks]
+    predicted_clusters_ = [(t['mention_id'], (t['topic'], t['roleset_id'].lower())) for t in my_tasks]
     if syn_map:
         predicted_clusters_ = [(t['mention_id'], resolve_rs(t, syn_map)) for t in my_tasks]
+    # predicted_clusters_ = [(t['mention_id'], str(predicted_[t['mention_id']])) for t in my_tasks]
+    run_coreference_results(gold_clusters_, predicted_clusters_)
+
+
+def generate_results_lemma(my_tasks):
+    gold_clusters_ = [(t['mention_id'], t['gold_cluster']) for t in my_tasks]
+    predicted_clusters_ = [(t['mention_id'], (t['topic'], t['lemma'].lower())) for t in my_tasks]
+    # if syn_map:
+    #     predicted_clusters_ = [(t['mention_id'], resolve_rs(t, syn_map)) for t in my_tasks]
     # predicted_clusters_ = [(t['mention_id'], str(predicted_[t['mention_id']])) for t in my_tasks]
     run_coreference_results(gold_clusters_, predicted_clusters_)
 
@@ -332,44 +359,91 @@ def create_gpt_prodigy_tasks():
 def final_results(only_eventive=False, only_non_eventive=False):
     m_topics = ['41', '42', '43', '44', '45']
     m_topics = None
-
+    mention_map = pickle.load(open('./data/mention_map.pkl', 'rb'))
     # my_tasks = get_tasks('./data/annotations/ecb_evi_george_r2.jsonl', 'evi')
     my_tasks_hum = get_tasks('./data/annotations/adjudication_clean.json', m_topics)
     my_tasks_gpt = get_tasks('./data/annotations/gpt4-coref.json', m_topics)
-    print(len(my_tasks_hum))
-    print(len(my_tasks_gpt))
+    all_men_ids = list([t['mention_id'] for t in my_tasks_hum])
+    eventive_ids = list([t['mention_id'] for t in my_tasks_hum if has_roleset(t['arg1'])])
+    non_eventive_ids = list([t['mention_id'] for t in my_tasks_hum if not has_roleset(t['arg1'])])
 
+    # print('all events', len(all_men_ids))
+    # print('eventive events', len(eventive_ids))
+    # print('non-eventive events', len(non_eventive_ids))
+    for t in my_tasks_hum:
+        t['lemma'] = mention_map[t['mention_id']]['lemma']
+    for t in my_tasks_gpt:
+        t['roleset_id'] = mention_map[t['mention_id']]['lemma'].lower()
+    # generate_results_lemma(my_tasks_hum)
+    # if only_eventive:
+    my_tasks_hum_e = [t for t in my_tasks_hum if t['mention_id'] in eventive_ids]
+    my_tasks_gpt_e = [t for t in my_tasks_gpt if t['mention_id'] in eventive_ids]
+    # elif only_non_eventive:
+    my_tasks_hum_ne = [t for t in my_tasks_hum if t['mention_id'] in non_eventive_ids]
+    my_tasks_gpt_ne = [t for t in my_tasks_gpt if t['mention_id'] in non_eventive_ids]
     # my_tasks = list(JSONL('./data/annotations/evi.json'))
     # my_tasks = list(JSON('./data/annotations/evi.json'))
 
     pb_syn_hum = get_syn_map_hum('./data/annotations/roleset_syn_detection2.tsv')
-    generate_eids(my_tasks_hum, pb_syn_hum, human=False)
-    generate_eids(my_tasks_gpt, pb_syn_hum, human=False)
-    print('\nrs only')
-    print('human')
-    generate_results_rs_only(my_tasks_hum, {})
-    print('gpt')
-    generate_results_rs_only(my_tasks_gpt, {})
+    pb_syn_vn = get_syn_map_vn()
+    for t in my_tasks_hum + my_tasks_gpt:
+        topic = t['topic']
+        roleset_id = t['roleset_id']
+        if roleset_id in pb_syn_vn:
+            pb_syn_vn[topic, roleset_id] = (topic, pb_syn_vn[roleset_id])
+    # pb_syn_hum = pb_syn_vn
+    pb_syn_hum = {}
+    # pb_syn_vn={}
+    generate_eids(my_tasks_hum, pb_syn_vn, human=True)
+    generate_eids(my_tasks_gpt, pb_syn_vn, human=False)
+    # print('rs only')
+    syn_name = '+ \\PBSynHum'
+    syn_name = ''
 
-    print('\nwith loc time')
-    print('human')
-    generate_results(my_tasks_hum, add_loc_time=True, only_eventive=only_eventive, only_non_eventive=only_non_eventive)
-    print('gpt')
-    generate_results(my_tasks_gpt, add_loc_time=True, only_eventive=only_eventive, only_non_eventive=only_non_eventive)
-    #
-    print('\nwithout loc time')
-    print('human')
-    generate_results(my_tasks_hum, add_loc_time=False, only_eventive=only_eventive, only_non_eventive=only_non_eventive)
-    print('gpt')
-    generate_results(my_tasks_gpt, add_loc_time=False, only_eventive=only_eventive, only_non_eventive=only_non_eventive)
-    #
+    def human_results():
+        print('\nHuman')
+
+        print(f'&\\RSHum {syn_name}')
+        # generate_results_rs_only(my_tasks_hum_ne, pb_syn_vn)
+        # generate_results_rs_only(my_tasks_hum_e, pb_syn_vn)
+        generate_results_rs_only(my_tasks_hum, pb_syn_vn)
+        print('\\\\')
+        print(f'&\\RSHum {syn_name} + \\eid')
+        # print('human')
+        # generate_results(my_tasks_hum_ne, add_loc_time=False, only_eventive=False, only_non_eventive=True)
+        # generate_results(my_tasks_hum_e, add_loc_time=False, only_eventive=True, only_non_eventive=False)
+        generate_results(my_tasks_hum, add_loc_time=False, only_eventive=False, only_non_eventive=False)
+        print('\\\\')
+        print(f'&\\RSHum {syn_name} + \\eidLT')
+        # generate_results(my_tasks_hum_ne, add_loc_time=True, only_eventive=False, only_non_eventive=True)
+        # generate_results(my_tasks_hum_e, add_loc_time=True, only_eventive=True, only_non_eventive=False)
+        generate_results(my_tasks_hum, add_loc_time=True, only_eventive=False, only_non_eventive=False)
+        print('\\\\')
+    human_results()
+    print('\nGPT')
+    print(f'&Lemma {syn_name}')
+    # generate_results_rs_only(my_tasks_gpt_ne, pb_syn_vn)
+    # generate_results_rs_only(my_tasks_gpt_e, pb_syn_vn)
+    generate_results_rs_only(my_tasks_gpt, pb_syn_vn)
+    print('\\\\')
+    print(f'&Lemma {syn_name} + \\eid')
+    # generate_results(my_tasks_gpt_ne, add_loc_time=False, only_eventive=False, only_non_eventive=True)
+    # generate_results(my_tasks_gpt_e, add_loc_time=False, only_eventive=True, only_non_eventive=False)
+    generate_results(my_tasks_gpt, add_loc_time=False, only_eventive=False, only_non_eventive=False)
+    print('\\\\')
+    print(f'&Lemma {syn_name} + \\eidLT')
+    # generate_results(my_tasks_gpt_ne, add_loc_time=True, only_eventive=False, only_non_eventive=True)
+    # generate_results(my_tasks_gpt_e, add_loc_time=True, only_eventive=True, only_non_eventive=False)
+    generate_results(my_tasks_gpt, add_loc_time=True, only_eventive=False, only_non_eventive=False)
+    print('\\\\')
+
 
 print('all')
 final_results()
 
 
-print('\nonly-eventive')
-final_results(only_eventive=True)
-
-print('\nonly-non-eventive')
-final_results(only_non_eventive=True)
+# print('\nonly-eventive')
+# # final_results(only_eventive=True)
+#
+# print('\nonly-non-eventive')
+# # final_results(only_non_eventive=True)
