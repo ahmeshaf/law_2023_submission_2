@@ -88,6 +88,18 @@ def add_eid(task, syn_map, sent_rs_id2task, human=False):
                     task['EIDsLoc'].add((arg0, rs_resolved, argl))
 
 
+def generate_eids(tasks, syn_map, human=False):
+    sent_rs_id2task = {}
+    for task in tasks:
+        sent_rs_id = (task['doc_id'], task['sentence_id'], task['roleset_id'])
+        if sent_rs_id not in sent_rs_id2task:
+            sent_rs_id2task[sent_rs_id] = []
+        sent_rs_id2task[sent_rs_id].append(task)
+
+    for task in tasks:
+        add_eid(task, syn_map, sent_rs_id2task, human)
+
+
 def event_id_resolve(tasks, add_loc_time):
     mid2cluster = []
     eid2mid = {}
@@ -121,18 +133,6 @@ def event_id_resolve(tasks, add_loc_time):
         mid2cluster.append((rs, l))
 
     return dict(mid2cluster)
-
-
-def generate_eids(tasks, syn_map, human=False):
-    sent_rs_id2task = {}
-    for task in tasks:
-        sent_rs_id = (task['doc_id'], task['sentence_id'], task['roleset_id'])
-        if sent_rs_id not in sent_rs_id2task:
-            sent_rs_id2task[sent_rs_id] = []
-        sent_rs_id2task[sent_rs_id].append(task)
-
-    for task in tasks:
-        add_eid(task, syn_map, sent_rs_id2task, human)
 
 
 def run_coreference_results(gold_clusters, predicted_clusters):
@@ -250,11 +250,16 @@ def generate_results(my_tasks, add_loc_time=True, only_eventive=False, only_non_
     run_coreference_results(gold_clusters_, predicted_clusters_)
 
 
-def generate_results_rs_only(my_tasks, syn_map=None):
+def generate_results_rs_only(my_tasks, syn_map=None, oracle=False):
     gold_clusters_ = [(t['mention_id'], t['gold_cluster']) for t in my_tasks]
     predicted_clusters_ = [(t['mention_id'], (t['topic'], t['roleset_id'].lower())) for t in my_tasks]
     if syn_map:
         predicted_clusters_ = [(t['mention_id'], resolve_rs(t, syn_map)) for t in my_tasks]
+
+    m2task = {t['mention_id']: t for t in my_tasks}
+
+    if oracle:
+        predicted_clusters_ = [(m_id, clus_id + (m2task[m_id]['gold_cluster'],)) for m_id, clus_id in predicted_clusters_]
     # predicted_clusters_ = [(t['mention_id'], str(predicted_[t['mention_id']])) for t in my_tasks]
     run_coreference_results(gold_clusters_, predicted_clusters_)
 
@@ -373,7 +378,8 @@ def final_results(only_eventive=False, only_non_eventive=False):
     for t in my_tasks_hum:
         t['lemma'] = mention_map[t['mention_id']]['lemma']
     for t in my_tasks_gpt:
-        t['roleset_id'] = mention_map[t['mention_id']]['lemma'].lower()
+        # t['roleset_id'] = mention_map[t['mention_id']]['lemma'].lower()
+        t['roleset_id'] = t['roleset_id'].lower().split('.')[0]
     # generate_results_lemma(my_tasks_hum)
     # if only_eventive:
     my_tasks_hum_e = [t for t in my_tasks_hum if t['mention_id'] in eventive_ids]
@@ -439,8 +445,7 @@ def final_results(only_eventive=False, only_non_eventive=False):
 
 
 print('all')
-final_results()
-
+# final_results()
 
 # print('\nonly-eventive')
 # # final_results(only_eventive=True)

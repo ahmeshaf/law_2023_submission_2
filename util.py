@@ -157,7 +157,7 @@ JAVASCRIPT_WSD = """
         // console.log('The answer was: ', answer)
         console.log('The answer was: ', roleset.value)
         // Update the rolesets with a unique list of previous + current
-        allRolesets = [...new Set([...allRolesets, task.roleset_id, ...task.field_suggestions.roleset])]
+        allRolesets = [...new Set([...allRolesets, task.roleset_id, ...task.field_suggestions.roleset_id])]
         allArg0s = [...new Set([...allArg0s, task.arg0, ...task.field_suggestions.arg0])]
         allArg1s = [...new Set([...allArg1s, task.arg1, ...task.field_suggestions.arg1])]
         allArgLs = [...new Set([...allArgLs, task.argL, ...task.field_suggestions.argL])]
@@ -170,7 +170,7 @@ JAVASCRIPT_WSD = """
         const { task } = event.detail
         if (prevTaskHash !== task._task_hash) {  // we have a new example
             console.log('The cool answer was: ', roleset.value)
-            createOptions(rolesetList, task.field_suggestions.roleset, allRolesets)
+            createOptions(rolesetList, task.field_suggestions.roleset_id, allRolesets)
             createOptions(arg0List, task.field_suggestions.arg0, allArg0s)
             createOptions(arg1List, task.field_suggestions.arg1, allArg1s)
             createOptions(argLList, task.field_suggestions.argL, allArgLs)
@@ -188,10 +188,6 @@ JAVASCRIPT_WSD = """
             // createOptions(document.getElementById("rolesetList"), task.roleset_suggestions, allRolesets)
         }
     })
-
-    function doThis() {
-        window.prodigy.update({});
-    }
 
     function setFocusToTextBox(val) {
         roleset.scrollIntoView();
@@ -219,8 +215,33 @@ JAVASCRIPT_WSD = """
     function updateArgT(val) {
         window.prodigy.update({argT: val})
     }
-
+    
+    function scrollToMark() {
+        document.getElementById("mark_id").scrollIntoView();
+    }
+    
     """
+
+DO_THIS_JS = """
+function doThis() {
+        window.prodigy.update({});
+    }
+"""
+
+DO_THIS_JS_DISABLE = """
+function doThis() {
+        arg0.disabled = true;
+        arg1.disabled = true
+        argL.disabled = true;
+        argT.disabled = true;
+        arg0.style.backgroundColor = "#CCCCCC";
+        arg1.style.backgroundColor = "#CCCCCC";
+        argL.style.backgroundColor = "#CCCCCC";
+        argT.style.backgroundColor = "#CCCCCC";
+        window.prodigy.update({});
+    }
+"""
+
 PB_HTML = """
                 <div class="c01131m">
                 <label class="c01132m" for="propBankSite">PropBank</label>
@@ -243,8 +264,48 @@ DOC_HTML = """
                     frameborder='no' 
                     id="documentSite"> 
                 </iframe>
-                </di>
+                </div>
                 """
+
+# DOC_HTML2 = """
+# <div class="myBox" height='500' >
+#     {{bert_doc}}
+# </div>
+#
+# """
+
+DOC_HTML2 = """
+<style>
+    .myBox {
+        font-size: 14px;
+        border: none;
+        padding: 20px;
+        width: 100%;
+        height: 200px;
+        overflow: scroll;
+        line-height: 1.5;
+    }
+    p {
+    margin: -15px 10px;
+}
+</style>
+<div class="c01131m">
+<label class="c01132m" for="documentSite">Document: {{doc_id}}</label>
+<body>
+<div class="myBox">
+<p>
+    {{{bert_doc}}}
+<div>
+</body>
+</div>
+<style onload="scrollToMark()" />
+<script>
+function scrollToMark() {
+        console.log('Hello World');
+        document.getElementById({{mention_id}}).scrollIntoView();
+    }
+</script>
+"""
 
 
 def generate_key_file(coref_map_tuples, name, out_dir, out_file_path):
@@ -301,3 +362,32 @@ class WhitespaceTokenizer:
             spaces[-1] = False
 
         return Doc(self.vocab, words=words, spaces=spaces)
+
+
+def mention2task(mention, copy_keys=None):
+    task = {}
+    if copy_keys:
+        for key in copy_keys:
+            task[key] = mention[key]
+
+    p_task = {
+        'text': mention['sentence'],
+
+        'spans': [{
+            'token_start': mention['start'],
+            'token_end': mention['end'],
+            'start': mention['start_char'],
+            'end': mention['end_char'],
+            'label': mention['men_type'].upper(),
+            'split': mention['split'],
+            'type': mention['type'].upper(),
+            'men_type': mention['men_type'],
+
+        }],
+        'meta': {
+            'Doc': mention['doc_id'],
+            'Sentence': mention['sentence_id'],
+        }
+    }
+
+    return {**task, **p_task}
