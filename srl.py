@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 from prodigy.components.preprocess import add_tokens
 
 # from events.parsing.parse_raw import docs2html
-from util import HTML_INPUT, JAVASCRIPT_WSD, PB_HTML, DOC_HTML, DOC_HTML2, DO_THIS_JS_DISABLE
+from util import HTML_INPUT, JAVASCRIPT_WSD, PB_HTML, DOC_HTML, DOC_HTML2, DO_THIS_JS_DISABLE, DO_THIS_JS
 from tqdm.autonotebook import tqdm
 from prodigy.components.loaders import JSONL, JSON
 from prodigy.util import split_string, set_hashes
@@ -306,6 +306,128 @@ def wsd_update(
         'history_length': batch_size,
         'instant_submit': False,
         "javascript": JAVASCRIPT_WSD + DO_THIS_JS_DISABLE
+    }
+
+    return {
+        "view_id": "blocks",  # Annotation interface to use
+        "dataset": dataset,  # Name of dataset to save annotations
+        "stream": stream,  # Incoming stream of examples
+        "update": make_updates,
+        "exclude": None,
+        "config": config,
+    }
+
+
+@prodigy.recipe(
+    "srl-update",
+    dataset=("The dataset to use", "positional", None, str),
+    spacy_model=("The base model", "positional", None, str),
+    source=("The source data as a JSON or JSONL file", "positional", None, str),
+    update=("Whether to update the model during annotation", "flag", "UP", bool),
+    port=("Port of the app", "option", 'port', int),
+    pb_link=("Url to the PropBank website", 'option', 'pl', str)
+)
+def srl_update(
+    dataset: str,
+    spacy_model: str,
+    source: str,
+    update: bool = False,
+    port: Optional[int] = 8080,
+    pb_link: Optional[str] = 'http://0.0.0.0:8701/',
+):
+    nlp = spacy.load(spacy_model)
+    nlp.tokenizer = WhitespaceTokenizer(nlp.vocab)
+
+    labels = ['EVT']
+    pb_dict = get_propbank_dict()
+
+    # load the data
+    if source.lower().endswith('jsonl'):
+        stream = JSONL(source)
+    elif source.lower().endswith('json'):
+        stream = JSON(source)
+    else:
+        raise TypeError("Need jsonl file type for source.")
+
+    stream = sort_tasks(stream)
+    # print(stream[0][ROLESET_ID])
+    batch_size = 10
+
+    alias2roleset = defaultdict(set)
+
+    for roleset, roledict in pb_dict.items():
+        aliases = roledict['aliases']
+        for alias in aliases:
+            alias2roleset[alias].add(roleset)
+    trs_arg2val_vec = {}
+    field_suggestions = get_field_suggestions(dataset, pb_dict)
+
+    def make_srl_tasks(stream_):
+        texts = [(eg_["text"], eg_) for eg_ in stream_]
+        for doc, task in nlp.pipe(texts, batch_size=batch_size, as_tuples=True):
+            new_task = copy.deepcopy(task)
+            topic = task['topic']
+            new_task['field_suggestions'] = field_suggestions
+            best_roleset_id = new_task[ROLESET_ID]
+            curr_predicate = pb_dict[best_roleset_id]['frame']
+
+            prop_holder = pb_link + '/' + curr_predicate + '.html#' + best_roleset_id
+
+            new_task['prop_holder'] = prop_holder
+
+            for arg_name in ALL_ARGS:
+                trs_arg = (topic, best_roleset_id, arg_name)
+                if trs_arg in trs_arg2val_vec:
+                    possible_args = trs_arg2val_vec[trs_arg].items()
+                    cos_sims_args = [1 - cosine(vec, doc.vector) for val, vec in possible_args]
+                    best_arg_val = possible_args[np.argmax(cos_sims_args)][0]
+                    new_task[arg_name] = best_arg_val
+                else:
+                    new_task[arg_name] = ''
+
+            new_task = set_hashes(new_task, input_keys=('text',), task_keys=('text', 'spans'), overwrite=True)
+            yield new_task
+
+    stream = make_srl_tasks(stream)
+
+    def make_updates(answers):
+        for answer in answers:
+            if answer['answer'] == 'accept':
+                best_roleset_id = answer[ROLESET_ID]
+                topic = answer['topic']
+                for arg_name in ALL_ARGS:
+                    trs_arg = (topic, best_roleset_id, arg_name)
+                    doc_vector = nlp(answer['text']).vector
+                    if trs_arg in trs_arg2val_vec:
+                        trs_arg2val_vec[trs_arg] = trs_arg2val_vec[trs_arg] + doc_vector
+                    else:
+                        trs_arg2val_vec[trs_arg] = doc_vector
+
+                    if answer[arg_name]:
+                        field_suggestions[arg_name].add(answer[arg_name])
+
+    blocks = [
+        {"view_id": "html", "html_template": PB_HTML},
+        {"view_id": "html", "html_template": DOC_HTML2},
+        {'view_id': 'ner'},
+        {"view_id": "html", "html_template": HTML_INPUT, 'text': None},
+        {'view_id': 'text_input', "field_rows": 1, "field_autofocus": False,
+         "field_label": "Reason for Flagging"}
+    ]
+
+    config = {
+        "lang": nlp.lang,
+        "labels": labels,  # Selectable label options
+        "span_labels": labels,  # Selectable label options
+        "auto_count_stream": not update,  # Whether to recount the stream at initialization
+        "show_stats": True,
+        "host": '0.0.0.0',
+        "port": port,
+        'blocks': blocks,
+        'batch_size': batch_size,
+        'history_length': batch_size,
+        'instant_submit': False,
+        "javascript": JAVASCRIPT_WSD + DO_THIS_JS
     }
 
     return {

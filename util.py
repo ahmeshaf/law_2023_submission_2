@@ -181,8 +181,17 @@ JAVASCRIPT_WSD = """
             arg1.value = task.arg1
             argL.value = task.argL
             argT.value = task.argT
-
-            setFocusToTextBox(task.roleset_id)
+            if (arg0.disabled) {
+                setFocusToTextBox(task.roleset_id)
+            }
+            else {
+                roleset.value = task.roleset_id;
+                roleset.disabled = true;
+                arg0.scrollIntoView();
+                arg0.focus();
+                arg0.value = '';
+                arg0.value = task.arg0; //set that value back. 
+            }
         } else {
         console.log('The un cool answer was: ', roleset.value)
             // createOptions(document.getElementById("rolesetList"), task.roleset_suggestions, allRolesets)
@@ -224,6 +233,7 @@ JAVASCRIPT_WSD = """
 
 DO_THIS_JS = """
 function doThis() {
+        roleset.style.backgroundColor = "#CCCCCC";
         window.prodigy.update({});
     }
 """
