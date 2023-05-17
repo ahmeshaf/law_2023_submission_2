@@ -350,7 +350,7 @@ def srl_update(
         raise TypeError("Need jsonl file type for source.")
 
     stream = sort_tasks(stream)
-    # print(stream[0][ROLESET_ID])
+    # print(stream[0]['answer'])
     batch_size = 10
 
     alias2roleset = defaultdict(set)
@@ -384,7 +384,8 @@ def srl_update(
                     new_task[arg_name] = best_arg_val
                 else:
                     new_task[arg_name] = ''
-
+            if 'answer' in new_task:
+                new_task.pop('answer')
             new_task = set_hashes(new_task, input_keys=('text',), task_keys=('text', 'spans'), overwrite=True)
             yield new_task
 
