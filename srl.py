@@ -1,5 +1,7 @@
 import copy
 import glob
+import random
+
 from bs4 import BeautifulSoup
 from prodigy.components.preprocess import add_tokens
 
@@ -19,6 +21,7 @@ from typing import Iterable, Optional, List
 import os
 import spacy
 import prodigy
+import unittest
 
 STOPWORDS = {'the', 'a', 'an', 'of', 'is', 'was'}
 ALL_ARGS = ['arg0', 'arg1', 'argL', 'argT']
@@ -72,7 +75,7 @@ def make_wsd_tasks(stream, nlp, alias2roleset, propbank_dict,
     texts = [(eg_["text"], eg_) for eg_ in stream]
     # shuffle(texts)
 
-    pos_map = {'VERB': 'v', 'NOUN': 'n',  'JJ': 'j'}
+    pos_map = {'VERB': 'v', 'NOUN': 'n', 'JJ': 'j'}
 
     roleset_ids = list(propbank_dict.keys())
 
@@ -99,7 +102,8 @@ def make_wsd_tasks(stream, nlp, alias2roleset, propbank_dict,
                 if root_lemma in alias2roleset:
                     possib_rolesets = alias2roleset[root_lemma]
                     for roleset in possib_rolesets:
-                        task_per_span['options'].append({'id': roleset, 'text': roleset + ": " + propbank_dict[roleset]['name']})
+                        task_per_span['options'].append(
+                            {'id': roleset, 'text': roleset + ": " + propbank_dict[roleset]['name']})
                         if roleset not in sense2vec:
                             sense2vec[roleset] = np.ones(doc.vector.shape)
 
@@ -160,7 +164,7 @@ def get_field_suggestions(dataset, propbank_dict):
 
 def sort_tasks(stream):
     return sorted([t for t in stream],
-           key=lambda x: (x['doc_id'], int(x['sentence_id']), int(x['spans'][0]['start'])))
+                  key=lambda x: (x['doc_id'], int(x['sentence_id']), int(x['spans'][0]['start'])))
 
 
 def get_rs_from_doc(doc, task_, topic_sense2vec):
@@ -361,6 +365,7 @@ def srl_update(
             alias2roleset[alias].add(roleset)
     trs_arg2val_vec = {}
     field_suggestions = get_field_suggestions(dataset, pb_dict)
+    topic_rs_arg2vals = {}
 
     def make_srl_tasks(stream_):
         texts = [(eg_["text"], eg_) for eg_ in stream_]
@@ -377,13 +382,16 @@ def srl_update(
 
             for arg_name in ALL_ARGS:
                 trs_arg = (topic, best_roleset_id, arg_name)
-                if trs_arg in trs_arg2val_vec:
-                    possible_args = trs_arg2val_vec[trs_arg].items()
-                    cos_sims_args = [1 - cosine(vec, doc.vector) for val, vec in possible_args]
-                    best_arg_val = possible_args[np.argmax(cos_sims_args)][0]
+
+                if trs_arg in topic_rs_arg2vals:
+                    arg_vals = list(topic_rs_arg2vals[trs_arg])
+                    possible_arg_vecs = [trs_arg2val_vec[trs_arg + (val,)] for val in arg_vals]
+                    cos_sims_args = [1 - cosine(vec, doc.vector) for vec in possible_arg_vecs]
+                    best_arg_val = arg_vals[np.argmax(cos_sims_args)]
                     new_task[arg_name] = best_arg_val
                 else:
                     new_task[arg_name] = ''
+
             if 'answer' in new_task:
                 new_task.pop('answer')
             new_task = set_hashes(new_task, input_keys=('text',), task_keys=('text', 'spans'), overwrite=True)
@@ -397,15 +405,20 @@ def srl_update(
                 best_roleset_id = answer[ROLESET_ID]
                 topic = answer['topic']
                 for arg_name in ALL_ARGS:
+                    arg_val = answer[arg_name]
                     trs_arg = (topic, best_roleset_id, arg_name)
+                    trs_arg_val = trs_arg + (arg_val,)
                     doc_vector = nlp(answer['text']).vector
-                    if trs_arg in trs_arg2val_vec:
-                        trs_arg2val_vec[trs_arg] = trs_arg2val_vec[trs_arg] + doc_vector
+                    if trs_arg_val in trs_arg2val_vec:
+                        trs_arg2val_vec[trs_arg_val] = trs_arg2val_vec[trs_arg_val] + doc_vector
                     else:
-                        trs_arg2val_vec[trs_arg] = doc_vector
+                        trs_arg2val_vec[trs_arg_val] = doc_vector
 
-                    if answer[arg_name]:
-                        field_suggestions[arg_name].add(answer[arg_name])
+                    if arg_val:
+                        field_suggestions[arg_name].add(arg_val)
+                        if trs_arg not in topic_rs_arg2vals:
+                            topic_rs_arg2vals[trs_arg] = set()
+                        topic_rs_arg2vals[trs_arg].add(arg_val)
 
     blocks = [
         {"view_id": "html", "html_template": PB_HTML},
@@ -451,12 +464,12 @@ def srl_update(
     pb_link=("Url to the PropBank website", 'option', 'pl', str)
 )
 def srl_manual(
-    dataset: str,
-    spacy_model: str,
-    source: str,
-    update: bool = False,
-    port: Optional[int] = 8080,
-    pb_link: Optional[str] = 'http://0.0.0.0:8701/',
+        dataset: str,
+        spacy_model: str,
+        source: str,
+        update: bool = False,
+        port: Optional[int] = 8080,
+        pb_link: Optional[str] = 'http://0.0.0.0:8701/',
 ):
     nlp = spacy.load(spacy_model)
     nlp.tokenizer = WhitespaceTokenizer(nlp.vocab)
@@ -568,14 +581,16 @@ def srl_fix(
     else:
         raise TypeError("Need jsonl file type for source.")
 
-    stream_all = sorted([t for t in stream], key=lambda x: (x['doc_id'], int(x['sentence_id']), int(x['spans'][0]['start'])))
+    stream_all = sorted([t for t in stream],
+                        key=lambda x: (x['doc_id'], int(x['sentence_id']), int(x['spans'][0]['start'])))
 
     for task in stream_all:
         task['doc_host'] = f"http://{MY_IP}:{doc_port}/{task['doc_id']}.txt.html#{task['sentence_id']}"
         if 'roleset_id' not in task:
             task['roleset_id'] = ''
         if task['roleset_id'] in pb_dict:
-            task['prop_holder'] = f"http://{MY_IP}:{pb_port}/{pb_dict[task['roleset_id']]['frame']}.html#{task['roleset_id']}"
+            task[
+                'prop_holder'] = f"http://{MY_IP}:{pb_port}/{pb_dict[task['roleset_id']]['frame']}.html#{task['roleset_id']}"
 
         if 'annotator' not in task:
             task['annotator'] = ''
@@ -705,14 +720,16 @@ def srl_review(
     else:
         raise TypeError("Need jsonl file type for source.")
 
-    stream_all = sorted([t for t in stream], key=lambda x: (x['doc_id'], int(x['sentence_id']), int(x['spans'][0]['start'])))
+    stream_all = sorted([t for t in stream],
+                        key=lambda x: (x['doc_id'], int(x['sentence_id']), int(x['spans'][0]['start'])))
 
     for task in stream_all:
         task['doc_host'] = f"http://{MY_IP}:{doc_port}/{task['doc_id']}.txt.html#{task['sentence_id']}"
         if 'roleset_id' not in task:
             task['roleset_id'] = ''
         if task['roleset_id'] in pb_dict:
-            task['prop_holder'] = f"http://{MY_IP}:{pb_port}/{pb_dict[task['roleset_id']]['frame']}.html#{task['roleset_id']}"
+            task[
+                'prop_holder'] = f"http://{MY_IP}:{pb_port}/{pb_dict[task['roleset_id']]['frame']}.html#{task['roleset_id']}"
 
         if 'annotator' not in task:
             task['annotator'] = ''
@@ -793,32 +810,30 @@ def srl_review(
     }
 
 
+class TestSRL(unittest.TestCase):
+    def test_srl_update_new_tasks(self):
+        source = './data/dev/dev_george.jsonl'
+        spacy_model = 'en_core_web_md'
+        datas = 'test_dataset'
+        ctlr = srl_update(datas, spacy_model, source, update=True)
+        cltr_stream = ctlr['stream']
+        update_func = ctlr['update']
+        for task in cltr_stream:
+            assert 'answer' not in task
+
+    def test_srl_update(self):
+        source = './data/dev/dev_george.jsonl'
+        spacy_model = 'en_core_web_md'
+        datas = 'test_dataset'
+        ctlr = srl_update(datas, spacy_model, source, update=True)
+        cltr_stream = ctlr['stream']
+        update_func = ctlr['update']
+        for task in cltr_stream:
+            for arg_n in ALL_ARGS:
+                task[arg_n] = arg_n + str(random.randint(0, 3))
+            task['answer'] = 'accept'
+            update_func([task])
+
 
 if __name__ == '__main__':
-    ds = 'test_ldc'
-    sp_mod = 'en_core_web_md'
-    jsn2 = './data/annotations/adjudication_clean.json'
-    jsn1 = './data/annotations/all_tasks.json'
-
-    # stream1 = list(JSONL(jsn1))
-    # stream2 = list(JSON(jsn2))
-    # jsn = 'data/'
-    lex = '../../propbank-frames/frames/'
-    up = True
-    ctrl = srl_fix(ds, sp_mod, jsn1, update=True)
-    for i, task in enumerate(ctrl['stream']):
-        print(task['text'])
-        # y = input('accept?')
-        task['answer'] = 'accept'
-        # if task['root_lemma'].lower() == 'watergate':
-        #     task['user_input'] = 'scandal.01'
-        ctrl['update']([task])
-    # print(i)
-
-# propbank_dict = get_propbank_dict('../../propbank-frames/frames/')
-# alias2roleset = defaultdict(set)
-#
-# for roleset, roledict in propbank_dict.items():
-#     aliases = roledict['aliases']
-#     for alias in aliases:
-#         alias2roleset[alias].add(roleset)
+    unittest.main()
